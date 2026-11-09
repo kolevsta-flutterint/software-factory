@@ -1,0 +1,13 @@
+target/
+*.log
+probe-*.json
+probe-*.txt
+tools/discovery-*.txt
+tools/extra-*.txt
+.idea/
+*.iml
+.vscode/
+
+# real secrets go here, never committed
+src/main/resources/application-local.properties
+
