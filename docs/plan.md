@@ -522,7 +522,7 @@ Capture full logs as artefacts. Any failure → revert the group and retry each 
 | **Logging** | **Log4j2** → `C:\logs\software-factory`, daily rolling | See §5.3. Exclude `spring-boot-starter-logging` (Logback) and add `spring-boot-starter-log4j2`. |
 | **Snyk access** | Snyk **CLI** invoked as an external process (`ProcessBuilder`) + Snyk **REST API** via Spring `RestClient` | Matches the Option C (+B) recommendation in §3. |
 | **GitHub access** | **`org.kohsuke:github-api`** (or `RestClient` against the REST API) + **JGit** for clone/branch/commit/push | JGit keeps git operations in-process, no shell git dependency. |
-| **Agentic layer (Phase 2+)** | **Spring AI** `ChatModel` abstraction, provider = **Anthropic Claude API** (primary) + optional **Ollama** local model (cheap/offline fallback) — **not** AWS Bedrock | See §11.1 for the full options analysis. `ChatModel` *is* the pluggable `LlmClient` interface — no need to hand-roll one. |
+| **Agentic layer (Phase 2+)** | **Spring AI** `ChatModel` abstraction, provider = **GitHub Models API** (primary — spends existing Copilot credit pool) + **Ollama** local model ($0 fallback), with direct **Anthropic Claude API** as paid overflow — **not** AWS Bedrock | See §11.1 for the options analysis and §11.2 for billing mechanics. `ChatModel` *is* the pluggable `LlmClient` interface — no need to hand-roll one. |
 
 ### 5.1 Key Maven dependencies
 
@@ -916,18 +916,18 @@ Weekly digest: open vulns by severity, what the factory fixed, what it couldn't 
 
 | Provider | Notes |
 |---|---|
-| **Anthropic Claude API** ⭐ chosen primary | Best coding/reasoning quality for exactly this job (transitive pins, BOM edits, failing-test triage); same model family as "Claude Code" named in §3 Option F. |
-| OpenAI API (GPT-4.1 / o-series) | Mature alternative, equally strong at code; viable swap-in. |
-| Google Gemini API | Competitive, generous free tier — good for prototyping. |
-| Mistral API / Groq | Cheaper/faster, weaker reasoning — fine for low-stakes tasks (changelog summarisation, PR body copy), not for the "hard 30%". |
-| **GitHub Models API** (`models.github.ai`) | Reuses the existing GitHub PAT (add `models: read` scope) for free/cheap access to GPT-4o, Claude, Llama, etc. Zero new vendor relationship — good for an early spike before paying for an Anthropic key. |
-| Azure OpenAI | Still a cloud dependency despite not being AWS — out of scope given the "local only" spirit of §5. |
+| **GitHub Models API** (`models.github.ai`) ⭐ chosen primary | Reuses the existing GitHub PAT (add `models: read` scope). **Billed against the org's existing Copilot "premium request" credit pool, not a new bill** — see §11.2. Serves Claude, GPT-4o, Llama, etc. through one endpoint. |
+| Anthropic Claude API (direct) | Best coding/reasoning quality for exactly this job (transitive pins, BOM edits, failing-test triage); same model family as "Claude Code" named in §3 Option F. **Separate, new pay-as-you-go bill** (§11.2) — fallback once GitHub Models credits/rate-limits are exhausted. |
+| OpenAI API (GPT-4.1 / o-series) | Mature alternative, equally strong at code; viable swap-in; separate bill. |
+| Google Gemini API | Competitive, generous free tier — good for prototyping; separate bill. |
+| Mistral API / Groq | Cheaper/faster, weaker reasoning — fine for low-stakes tasks (changelog summarisation, PR body copy), not for the "hard 30%"; separate bill. |
+| Azure OpenAI | Still a cloud dependency despite not being AWS — out of scope given the "local only" spirit of §5; separate bill. |
 
-**Track 2 — fully local / self-hosted (true zero-cloud-dependency):**
+**Track 2 — fully local / self-hosted (true zero-cloud-dependency, $0 API cost):**
 
 | Option | Notes |
 |---|---|
-| **Ollama** ⭐ chosen fallback | OpenAI-compatible local HTTP server (`localhost:11434/v1`); runs Llama 3 / Qwen2.5-Coder / DeepSeek-Coder. Free, private, GPU-bound for good latency/quality. |
+| **Ollama** ⭐ chosen cost-free fallback | OpenAI-compatible local HTTP server (`localhost:11434/v1`); runs Llama 3 / Qwen2.5-Coder / DeepSeek-Coder. No per-token cost at all — only electricity/hardware. GPU-bound for good latency/quality. |
 | llama.cpp server / LM Studio / vLLM | Same idea, different ergonomics/performance tradeoffs. |
 | **Jlama** | Pure-JVM inference library, no native/server process — notable since the factory itself is Java, but currently behind Ollama on model selection/perf. |
 
@@ -943,8 +943,25 @@ gives no `LlmClient`-style interface, so it's noted as an alternative, not the c
 **Java integration layer — decision: Spring AI**, not LangChain4j. Spring AI is the official
 Spring project (same ecosystem as Spring Boot 4.1) and its `ChatModel`/`ChatClient` abstraction
 **is** the pluggable `LlmClient` interface already called for in §5 — no need to hand-roll one.
-Swapping providers (Anthropic ↔ Ollama ↔ GitHub Models) becomes a dependency + property change,
-and the Bedrock starter simply never gets added.
+Swapping providers (GitHub Models ↔ Anthropic direct ↔ Ollama) becomes a dependency + property
+change, and the Bedrock starter simply never gets added.
+
+### 11.2 How each option is billed (org has an existing GitHub Copilot credit pool)
+
+**Only one of the above options draws on GitHub credits already paid for — everything else is a
+new, separate bill:**
+
+| Option | Billed against existing GitHub AI credits? | Billing mechanics |
+|---|---|---|
+| GitHub Models API | ✅ Yes | Same "premium request" pool as Copilot Chat/coding agent. Premium models (Claude, GPT-4o/o-series) consume credits, usually at a per-model multiplier; the included base model is typically unlimited under fair use. **Confirm the exact per-model multiplier and any overage rate in the org's Copilot billing/usage settings** — not reliably quotable here, GitHub's plan terms change over time. |
+| GitHub Copilot coding agent | ✅ Yes | Same pool; an agent session (multi-step autonomous loop) typically costs more credits than one chat turn. |
+| Anthropic / OpenAI / Gemini / Mistral / Groq / Azure OpenAI (direct) | ❌ No | Independent account, independent pay-as-you-go bill in USD per token. Zero interaction with the GitHub credit balance. |
+| Ollama / local model | ❌ No cost at all | No API bill — only local electricity/hardware. |
+
+**Practical sequencing given the existing 12,000-credit pool:**
+1. **Default to GitHub Models first** — it spends a budget that's already sunk, not new money, and already includes Claude for the hard reasoning cases.
+2. **Route high-volume/low-stakes generation (PR body text, changelog summaries) through Ollama** to conserve credits for the cases that actually need frontier-model judgment.
+3. **Only open a direct Anthropic/OpenAI account** once the credit pool is exhausted or GitHub Models' rate limits (it's primarily built for experimentation, so sustained high-volume agentic use may throttle regardless of remaining credits) become the binding constraint.
 
 ---
 
