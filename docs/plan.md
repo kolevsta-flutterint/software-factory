@@ -522,7 +522,7 @@ Capture full logs as artefacts. Any failure → revert the group and retry each 
 | **Logging** | **Log4j2** → `C:\logs\software-factory`, daily rolling | See §5.3. Exclude `spring-boot-starter-logging` (Logback) and add `spring-boot-starter-log4j2`. |
 | **Snyk access** | Snyk **CLI** invoked as an external process (`ProcessBuilder`) + Snyk **REST API** via Spring `RestClient` | Matches the Option C (+B) recommendation in §3. |
 | **GitHub access** | **`org.kohsuke:github-api`** (or `RestClient` against the REST API) + **JGit** for clone/branch/commit/push | JGit keeps git operations in-process, no shell git dependency. |
-| **Agentic layer (Phase 2+)** | Local/approved LLM via HTTP — **not** AWS Bedrock | Pluggable `LlmClient` interface so the provider can be swapped. |
+| **Agentic layer (Phase 2+)** | **Spring AI** `ChatModel` abstraction, provider = **Anthropic Claude API** (primary) + optional **Ollama** local model (cheap/offline fallback) — **not** AWS Bedrock | See §11.1 for the full options analysis. `ChatModel` *is* the pluggable `LlmClient` interface — no need to hand-roll one. |
 
 ### 5.1 Key Maven dependencies
 
@@ -895,7 +895,7 @@ Weekly digest: open vulns by severity, what the factory fixed, what it couldn't 
 7. **Severity scope for v1:** Critical+High only, or Medium too?
 8. **Release/change freeze windows** — the `release/<sprint>` cadence implies regular cut dates the factory should avoid. Which?
 9. **Postgres:** existing local instance, or should the plan include a `docker-compose.yml`?
-10. **LLM for Phase 2:** Bedrock is out — GitHub Copilot, direct Anthropic/OpenAI API, or a locally-hosted model?
+10. ~~**LLM for Phase 2:** Bedrock is out — GitHub Copilot, direct Anthropic/OpenAI API, or a locally-hosted model?~~ → ✅ **See §11.1 — Spring AI + Anthropic Claude API (primary), Ollama local model (fallback).**
 11. **Scale:** one repo forever, or eventually N repos?
 12. **Private registries:** Maven Central + GCP only, or Artifactory? *(no committed `settings.xml`; branch `artifactori-kiran-test` hints at an Artifactory trial)*
 13. **Is "FIPS" in the name a compliance constraint** (FIPS 140-2 crypto) restricting permissible library versions?
@@ -903,6 +903,48 @@ Weekly digest: open vulns by severity, what the factory fixed, what it couldn't 
 15. **Dependabot alerts API returns 403** — disabled org-wide, or just token scope?
 16. **Should the factory stay out of `aep-dispatcher` and `braze-dispatcher`** until their Spring Boot 3.5.4 → 4.x migration lands? (Recommendation: yes.)
 17. **Pilot module:** OK to start with **`tradedesk-dispatcher`** (10 test files, Boot 4.1.0) as the single proving ground before widening to all 16?
+
+---
+
+### 11.1 LLM provider options (Bedrock excluded) — decision
+
+> Resolves Q10. **"Deployment: local only"** (§5) constrains where the *app process* runs — it does
+> not forbid outbound HTTPS calls to a hosted LLM API, same as the app already calls the GitHub and
+> (soon) Snyk cloud APIs. Two genuinely different tracks follow from that distinction.
+
+**Track 1 — hosted API (call over HTTPS, no infra to run):**
+
+| Provider | Notes |
+|---|---|
+| **Anthropic Claude API** ⭐ chosen primary | Best coding/reasoning quality for exactly this job (transitive pins, BOM edits, failing-test triage); same model family as "Claude Code" named in §3 Option F. |
+| OpenAI API (GPT-4.1 / o-series) | Mature alternative, equally strong at code; viable swap-in. |
+| Google Gemini API | Competitive, generous free tier — good for prototyping. |
+| Mistral API / Groq | Cheaper/faster, weaker reasoning — fine for low-stakes tasks (changelog summarisation, PR body copy), not for the "hard 30%". |
+| **GitHub Models API** (`models.github.ai`) | Reuses the existing GitHub PAT (add `models: read` scope) for free/cheap access to GPT-4o, Claude, Llama, etc. Zero new vendor relationship — good for an early spike before paying for an Anthropic key. |
+| Azure OpenAI | Still a cloud dependency despite not being AWS — out of scope given the "local only" spirit of §5. |
+
+**Track 2 — fully local / self-hosted (true zero-cloud-dependency):**
+
+| Option | Notes |
+|---|---|
+| **Ollama** ⭐ chosen fallback | OpenAI-compatible local HTTP server (`localhost:11434/v1`); runs Llama 3 / Qwen2.5-Coder / DeepSeek-Coder. Free, private, GPU-bound for good latency/quality. |
+| llama.cpp server / LM Studio / vLLM | Same idea, different ergonomics/performance tradeoffs. |
+| **Jlama** | Pure-JVM inference library, no native/server process — notable since the factory itself is Java, but currently behind Ollama on model selection/perf. |
+
+Local models are currently noticeably weaker than frontier hosted models at the kind of judgment
+calls Option F needs — acceptable for cheap/low-stakes tasks, risky for the hard cases, hence
+"fallback" rather than "primary".
+
+**GitHub Copilot coding agent** is a third, different shape entirely: not a raw inference API to
+call in a loop, but an orchestration mode — open an issue/PR, assign Copilot, it works async and
+pushes its own commits. Could replace the Option F escalation path as an alternative actuator, but
+gives no `LlmClient`-style interface, so it's noted as an alternative, not the chosen integration.
+
+**Java integration layer — decision: Spring AI**, not LangChain4j. Spring AI is the official
+Spring project (same ecosystem as Spring Boot 4.1) and its `ChatModel`/`ChatClient` abstraction
+**is** the pluggable `LlmClient` interface already called for in §5 — no need to hand-roll one.
+Swapping providers (Anthropic ↔ Ollama ↔ GitHub Models) becomes a dependency + property change,
+and the Bedrock starter simply never gets added.
 
 ---
 
